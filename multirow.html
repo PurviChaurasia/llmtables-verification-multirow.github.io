@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Tables QA Verification</title>
+
+    <!-- DataTables CSS -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+
+    <!-- jQuery -->
+    <script src="https://code.jquery.com/jquery-3.6.4.min.js"></script>
+
+    <!-- DataTables JS -->
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+
+    <!-- Papa Parse (CSV Parser) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+    <style>
+        body {
+            background-color: #f4f4f9;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+    
+        .container {
+            padding: 20px;
+            width: 100%;
+        }
+    
+        h2 {
+            text-align: center;
+        }
+    
+        table.dataTable {
+            width: 100vw;
+            max-width: 100%;
+            border-collapse: collapse;
+        }
+    
+        table.dataTable th, 
+        table.dataTable td {
+            padding: 10px;
+            text-align: left;
+            min-width: 100px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+    
+        .expanded-summary {
+            padding: 10px;
+            background-color: #f9f9f9;
+            white-space: normal;
+            word-wrap: break-word;
+            width: 100%;
+            overflow: hidden;
+        }
+    
+        table.dataTable th:hover {
+            background-color: #e0e0e0;
+            cursor: pointer;
+        }
+    
+        .filters th {
+            width: auto;
+        }
+    
+        tr.shown td.details-control {
+            background: url('https://datatables.net/examples/resources/details_close.png') no-repeat center center;
+        }
+    
+        td.details-control {
+            background: none;
+            text-align: center;
+        }
+    
+        .shown-row td {
+            padding-left: 40px;
+        }
+    
+        button {
+            background: linear-gradient(45deg, #007BFF, #0056D2);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+    
+        button:hover {
+            opacity: 0.9;
+        }
+    
+        #json-upload {
+            margin: 5px;
+        }
+
+        /* Collapse only the AbstractNarration column */
+        table.dataTable td:nth-child(10),
+        table.dataTable th:nth-child(10) {
+            max-width: 200px;  /* Adjust width as needed */
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+
+    </style>
+    
+</head>
+<body>
+
+    <div class="container">
+        <h2>LLM Tables QA Verification</h2>
+
+        <div id="question-container"></div> <!-- Question and Answer will be here -->
+
+        <label>Discard Question: 
+            <input type="checkbox" id="discardQuestion">
+        </label><br>
+        <label>Correct Question: 
+            <input type="text" id="correctQuestion">
+        </label><br>
+        <label>Correct Answer: 
+            <input type="text" id="correctAnswer">
+        </label><br>
+
+        <!-- File Upload for JSON -->
+        <input type="file" id="json-upload" accept=".json">
+
+        <!-- Save and Next Buttons -->
+        <button id="save-btn">Save</button>
+        <button id="next-btn">Next</button>
+
+        <table id="example" class="display" style="width:100%">
+            <thead>
+                <tr></tr> <!-- Headers will be populated dynamically -->
+                <tr class="filters"></tr> <!-- Filters row for dropdowns -->
+            </thead>
+            <tbody></tbody>
+        </table>
+
+        <!-- Download JSON Button -->
+        <button id="download-json">Download Updated JSON</button>
+    </div>
+
+    <script>
+        $(document).ready(function () {
+            let currentQuestionIndex = 0;
+            let jsonData = null;
+            let originalFileName = "questions.json";
+
+            $('#json-upload').on('change', function (e) {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                originalFileName = file.name; // Save the original file name
+
+                const reader = new FileReader();
+                reader.onload = function (event) {
+                    try {
+                        jsonData = JSON.parse(event.target.result);
+
+                        // Initialize difficulty for questions
+                        jsonData.questions.forEach((question) => {
+                            if (typeof question.difficulty === 'undefined') {
+                                question.difficulty = 1; // Default to easy
+                            }
+                        });
+
+                        renderTable(jsonData.rows); // Change from results[0].row to rows
+                        renderQuestionAndAnswer();
+                    } catch (error) {
+                        alert('Invalid JSON file');
+                    }
+                };
+                reader.readAsText(file);
+            });
+
+            function renderTable(rows) {
+                const tableHeaders = Object.keys(rows[0]);
+                const tbody = $('#example tbody').empty();
+                const thead = $('#example thead');
+                const filterRow = thead.find('tr.filters').empty();
+
+                const headerRow = thead.find('tr:first').empty();
+                tableHeaders.forEach((header) => {
+                    headerRow.append(`<th>${header.charAt(0).toUpperCase() + header.slice(1)}</th>`);
+                    filterRow.append(`<th><select class="column-filter" data-column="${header}">
+                        <option value="">All</option>
+                    </select></th>`);
+                });
+
+                rows.forEach((rowData) => {
+                    const tr = $('<tr>').addClass('row-data');
+                    tableHeaders.forEach((header) => {
+                        tr.append(`<td>${rowData[header] || ''}</td>`);
+                    });
+                    tbody.append(tr);
+                });
+
+                if ($.fn.dataTable.isDataTable('#example')) {
+                    $('#example').DataTable().clear().destroy();
+                }
+
+
+                const table = $('#example').DataTable({
+                    order: [[1, 'asc']],
+                    columnDefs: [
+                { targets: 9, width: '200px', className: 'text-truncate' } // AbstractNarration column (10th column)
+                ],
+                    initComplete: function () {
+                        this.api().columns().every(function () {
+                            const column = this;
+                            const columnIdx = column.index();
+                            if (columnIdx === 0) return;
+
+                            const uniqueValues = new Set();
+                            column.data().each(function (d) {
+                                if (d != null) uniqueValues.add(d); // Ensure no null values are added
+                            });
+
+                            // Select the corresponding dropdown element for this column
+                            const dropdown = $(`.column-filter[data-column="${tableHeaders[columnIdx]}"]`);
+                            uniqueValues.forEach(value => {
+                                dropdown.append(`<option value="${value}">${value}</option>`);
+                            });
+
+                            dropdown.on('change', function () {
+                                const val = $.fn.dataTable.util.escapeRegex($(this).val());
+                                column.search(val ? `^${val}$` : '', true, false).draw();
+                            });
+                        });
+                    }
+                });
+
+                $('#example tbody').on('click', 'td', function () {
+                let table = $('#example').DataTable();
+                let cell = table.cell(this); // Get the clicked cell
+                let row = table.row($(this).closest('tr')); // Get the row object
+                let rowData = row.data(); // Get row data
+                let columnIndex = cell.index().column; // Get the column index
+
+                if (columnIndex === 9) {  // AbstractNarration column (10th column)
+                    if (row.child.isShown()) {
+                        row.child.hide();
+                        $(this).closest('tr').removeClass('shown-row');
+                    } else {
+                        let narrationContent = rowData[9] || 'No summary available.'; // Ensure index is correct
+                        let content = `<div class="expanded-summary">${narrationContent}</div>`;
+                        row.child(content).show();
+                        $(this).closest('tr').addClass('shown-row');
+                    }
+                }
+            });
+
+            }
+
+            function renderQuestionAndAnswer() {
+                if (!jsonData) return;
+
+                const questionData = jsonData.questions[currentQuestionIndex];
+
+                console.log(jsonData.questions.length);
+                console.log(currentQuestionIndex);
+
+                $('#question-container').html(` 
+                    <p><strong>Question:</strong> ${questionData.question}</p>
+                    <p><strong>Answer:</strong> ${typeof questionData.answer === 'object' ? JSON.stringify(questionData.answer, null, 2) : questionData.answer}</p>
+                    <p><strong>Common Entity:</strong> ${questionData.common_entity}</p>
+                    <p><strong>Common Column:</strong> ${questionData.common_column}</p>
+
+                    <label>Difficulty Level: 
+                        <select id="difficulty">
+                            <option value="1" ${questionData.difficulty === 1 ? 'selected' : ''}>Easy</option>
+                            <option value="2" ${questionData.difficulty === 2 ? 'selected' : ''}>Medium</option>
+                            <option value="3" ${questionData.difficulty === 3 ? 'selected' : ''}>Hard</option>
+                        </select>
+                    </label><br>
+                `);
+            }
+
+            $('#save-btn').on('click', function () {
+                saveQuestionData();
+            });
+
+            function saveQuestionData() {
+                if (!jsonData) return;
+
+                const questionData = jsonData.questions[currentQuestionIndex];
+                questionData.discardQuestion = $('#discardQuestion').is(':checked');
+                questionData.correctQuestion = $('#correctQuestion').val();
+                questionData.correctAnswer = $('#correctAnswer').val();
+                questionData.difficulty = parseInt($('#difficulty').val());
+
+                alert('Question data saved!');
+            }
+
+            $('#next-btn').on('click', function () {
+
+                if (!jsonData) return;
+
+                // Reset form inputs
+                $('#discardQuestion').prop('checked', false);
+                $('#correctQuestion').val('');
+                $('#correctAnswer').val('');
+
+                // Move to the next question
+                currentQuestionIndex = (currentQuestionIndex + 1);
+                if (currentQuestionIndex == 3){
+                    alert("Completed!")
+                    return;
+                }
+                renderQuestionAndAnswer();
+
+            });
+
+
+            $('#download-json').on('click', function () {
+                const blob = new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                const newFileName = `updated_${originalFileName}`;
+                a.href = url;
+                a.download = newFileName;
+                a.click();
+            });
+        });
+    </script>
+</body>
+</html>
